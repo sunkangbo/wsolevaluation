@@ -29,7 +29,7 @@ import warnings
 
 from util import Logger
 
-_DATASET_NAMES = ('CUB', 'ILSVRC', 'OpenImages')
+_DATASET_NAMES = ('CUB', 'TINY', 'ILSVRC', 'OpenImages')
 _ARCHITECTURE_NAMES = ('vgg16', 'resnet50', 'inception_v3')
 _METHOD_NAMES = ('cam', 'adl', 'acol', 'spg', 'has', 'cutmix')
 _SPLITS = ('train', 'val', 'test')
@@ -184,6 +184,8 @@ def get_configs():
                         choices=('best', 'last'))
     parser.add_argument('--box_v2_metric', type=str2bool, nargs='?',
                         const=True, default=True)
+    parser.add_argument('--ckpt', type=str)
+
 
     # Common hyperparameters
     parser.add_argument('--batch_size', default=64, type=int,

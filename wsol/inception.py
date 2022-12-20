@@ -166,7 +166,7 @@ class InceptionCam(nn.Module):
 
         initialize_weights(self.modules(), init_mode='xavier')
 
-    def forward(self, x, labels=None, return_cam=False):
+    def forward(self, x, labels=None, return_cam=False, return_cam_logits=False):
         batch_size = x.shape[0]
 
         x = self.Conv2d_1a_3x3(x)
@@ -198,6 +198,12 @@ class InceptionCam(nn.Module):
 
         logits = self.avgpool(feat_map)
         logits = logits.view(logits.shape[0:2])
+
+        if return_cam_logits:
+            feature_map = feat_map.clone().detach()
+            classes = labels if labels is not None else logits.argmax(dim=-1)
+            cams = feature_map[range(batch_size), classes]
+            return cams, logits
 
         if return_cam:
             feature_map = feat_map.clone().detach()
@@ -254,7 +260,7 @@ class InceptionAcol(AcolBase):
 
         initialize_weights(self.modules(), init_mode='xavier')
 
-    def forward(self, x, labels=None, return_cam=False):
+    def forward(self, x, labels=None, return_cam=False, return_cam_logits=False):
         batch_size = x.shape[0]
 
         x = self.Conv2d_1a_3x3(x)
@@ -279,6 +285,16 @@ class InceptionAcol(AcolBase):
 
         logits_dict = self._acol_logits(feature=feature, labels=labels,
                                         drop_threshold=self.drop_threshold)
+
+        if return_cam_logits:
+            normalized_a = normalize_tensor(
+                logits_dict['feat_map_a'].clone().detach())
+            normalized_b = normalize_tensor(
+                logits_dict['feat_map_b'].clone().detach())
+            feature_maps = torch.max(normalized_a, normalized_b)
+            classes = labels if labels is not None else logits_dict['logits'].argmax(dim=-1)
+            cams = feature_maps[range(batch_size), classes]
+            return cams, logits_dict['logits']
 
         if return_cam:
             normalized_a = normalize_tensor(
@@ -347,7 +363,7 @@ class InceptionSpg(nn.Module):
 
         initialize_weights(self.modules(), init_mode='xavier')
 
-    def forward(self, x, labels=None, return_cam=False):
+    def forward(self, x, labels=None, return_cam=False, return_cam_logits=False):
         batch_size = x.shape[0]
 
         x = self.Conv2d_1a_3x3(x)
@@ -392,6 +408,12 @@ class InceptionSpg(nn.Module):
         attention, fused_attention = spg.compute_attention(
             feat_map=feat_map, labels=labels,
             logits_b1=logits_b1, logits_b2=logits_b2)
+        
+        if return_cam_logits:
+            feature_map = feat_map.clone().detach()
+            classes = labels if labels is not None else logits.argmax(dim=-1)
+            cams = feature_map[range(batch_size), classes]
+            return cams, logits
 
         if return_cam:
             feature_map = feat_map.clone().detach()
@@ -446,7 +468,7 @@ class InceptionAdl(nn.Module):
 
         initialize_weights(self.modules(), init_mode='xavier')
 
-    def forward(self, x, labels=None, return_cam=False):
+    def forward(self, x, labels=None, return_cam=False, return_cam_logits=False):
         batch_size = x.shape[0]
 
         x = self.Conv2d_1a_3x3(x)
@@ -478,6 +500,12 @@ class InceptionAdl(nn.Module):
 
         logits = self.avgpool(x)
         logits = logits.view(x.shape[0:2])
+
+        if return_cam_logits:
+            feature_map = x.clone().detach()
+            classes = labels if labels is not None else logits.argmax(dim=-1)
+            cams = feature_map[range(batch_size), classes]
+            return cams, logits
 
         if return_cam:
             feature_map = x.clone().detach()

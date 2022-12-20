@@ -36,6 +36,8 @@ from util import check_scoremap_validity
 from util import check_box_convention
 from util import t2n
 
+import torch
+
 _IMAGENET_MEAN = [0.485, .456, .406]
 _IMAGENET_STDDEV = [.229, .224, .225]
 _RESIZE_LENGTH = 224
@@ -236,7 +238,7 @@ class BoxEvaluator(LocalizationEvaluator):
             for image_id in self.image_ids}
         return resized_bbox
 
-    def accumulate(self, scoremap, image_id):
+    def accumulate(self, scoremap, image_id, image_label=None, image_logit=None, top1=False):
         """
         From a score map, a box is inferred (compute_bboxes_from_scoremaps).
         The box is compared against GT boxes. Count a scoremap as a correct
@@ -247,6 +249,9 @@ class BoxEvaluator(LocalizationEvaluator):
             scoremap: numpy.ndarray(size=(H, W), dtype=np.float)
             image_id: string.
         """
+
+        assert (image_label is None and  image_logit is None) or (image_label is not None and  image_logit is not None), "image_label and image_logit must be both None or not None"
+
         boxes_at_thresholds, number_of_box_list = compute_bboxes_from_scoremaps(
             scoremap=scoremap,
             scoremap_threshold_list=self.cam_threshold_list,
@@ -268,8 +273,15 @@ class BoxEvaluator(LocalizationEvaluator):
         for _THRESHOLD in self.iou_threshold_list:
             correct_threshold_indices = \
                 np.where(np.asarray(sliced_multiple_iou) >= (_THRESHOLD/100))[0]
-            self.num_correct[_THRESHOLD][correct_threshold_indices] += 1
+            if top1:
+                assert image_label is not None and  image_logit is not None, "image_label and image_logit must be both not None"
+                if image_label == np.argmax(image_logit):
+                    self.num_correct[_THRESHOLD][correct_threshold_indices] += 1
+            else:
+                self.num_correct[_THRESHOLD][correct_threshold_indices] += 1
+
         self.cnt += 1
+    
 
     def compute(self):
         """
@@ -279,13 +291,145 @@ class BoxEvaluator(LocalizationEvaluator):
                for the final performance.
         """
         max_box_acc = []
+        max_box_acc_tau = []
+        for _THRESHOLD in self.iou_threshold_list:
+            localization_accuracies = self.num_correct[_THRESHOLD] * 100. / float(self.cnt)
+            max_box_acc.append(localization_accuracies.max())
+            max_box_acc_tau.append(self.cam_threshold_list[np.argmax(localization_accuracies)])
+    
+        return max_box_acc, max_box_acc_tau
+
+
+
+class PseudoBoxEvaluator(LocalizationEvaluator):
+    def __init__(self, **kwargs):
+        super(PseudoBoxEvaluator, self).__init__(**kwargs)
+
+        self.image_ids = get_image_ids(metadata=self.metadata)
+        self.resize_length = _RESIZE_LENGTH
+        self.cnt = 0
+        self.cls_correct = 0
+        self.num_correct_gt = {iou_threshold: 0 for iou_threshold in self.iou_threshold_list}
+        self.num_correct_top1 = {iou_threshold: 0 for iou_threshold in self.iou_threshold_list}
+        self.original_bboxes = get_bounding_boxes(self.metadata)
+        self.image_sizes = get_image_sizes(self.metadata)
+        self.gt_bboxes = self._load_resized_boxes(self.original_bboxes)
+
+    def _load_resized_boxes(self, original_bboxes):
+        resized_bbox = {image_id: [
+            resize_bbox(bbox, self.image_sizes[image_id],
+                        (self.resize_length, self.resize_length))
+            for bbox in original_bboxes[image_id]]
+            for image_id in self.image_ids}
+        return resized_bbox
+    
+    def resize_pseudobbox(self, reg_logit, resize_size):
+        box_x0, box_y0, box_x1, box_y1 = map(float, reg_logit)
+        new_image_w, new_image_h = map(float, resize_size)
+
+        newbox_x0 = box_x0 * new_image_w
+        newbox_y0 = box_y0 * new_image_h
+        newbox_x1 = box_x1 * new_image_w
+        newbox_y1 = box_y1 * new_image_h
+        return int(newbox_x0), int(newbox_y0), int(newbox_x1), int(newbox_y1)
+
+    
+
+    def accumulate(self, image_logit, pseudobox, image_label, image_id):
+        """
+
+        Args:
+            pseudoboxes: numpy array shape (b,4)
+            image_ids : strings shape (b)
+            image_labels : 
+            image_logits :
+            image_id: string.
+        """
+        # print(pseudobox)
+        pseudobox = self.resize_pseudobbox(pseudobox, resize_size=(self.resize_length, self.resize_length))
+        gt_bboxes = self.gt_bboxes[image_id]
+
+
+        max_iou = self.compute_maxiou_onevsmulti(
+            np.array(pseudobox),
+            np.array(gt_bboxes))
+
+
+        top1 = False
+        if image_label == np.argmax(image_logit):
+            self.cls_correct += 1
+            top1 = True
 
         for _THRESHOLD in self.iou_threshold_list:
-            localization_accuracies = self.num_correct[_THRESHOLD] * 100. / \
-                                      float(self.cnt)
-            max_box_acc.append(localization_accuracies.max())
+            if max_iou >= _THRESHOLD / 100.:
+                self.num_correct_gt[_THRESHOLD] += 1
+                self.num_correct_top1[_THRESHOLD] += 1 if top1 else 0
 
-        return max_box_acc
+        self.cnt += 1
+    
+
+    def compute(self):
+        """
+        Returns:
+            max_cls_acc, 
+            max_box_top1, 
+            max_box_gt
+        """
+        max_box_top1 = []
+        max_box_gt = []
+
+        cls_acc = self.cls_correct * 100. / float(self.cnt)
+
+        for _THRESHOLD in self.iou_threshold_list:
+            loc_top1_acc = self.num_correct_top1[_THRESHOLD] * 100. / float(self.cnt)
+            loc_gt_acc = self.num_correct_gt[_THRESHOLD] * 100. / float(self.cnt)
+
+            max_box_top1.append(loc_top1_acc)
+            max_box_gt.append(loc_gt_acc)
+
+    
+        return cls_acc, max_box_top1, max_box_gt
+
+
+    def compute_iou(self, rec1, rec2):
+        """
+        computing IoU
+        :param rec1: (x0, y0, x1, y1), which reflects
+                (top, left, bottom, right)
+        :param rec2: (x0, y0, x1, y1)
+        :return: scala value of IoU
+        """
+        left1,top1,right1,bottom1 = rec1
+        left2,top2,right2,bottom2 = rec2
+
+        # aoviding invalid rectangles
+        bottom1 = max(top1,bottom1)
+        right1 = max(left1, right1)
+        bottom2 = max(top2,bottom2)
+        right2 = max(left2, right2)
+
+
+        # computing area of each rectangles
+        S_rec1 = (bottom1 - top1) * (right1 - left1)
+        S_rec2 = (bottom2 - top2) * (right2 - left2)
+        # computing the sum_area
+        sum_area = S_rec1 + S_rec2
+
+        # find the each edge of intersect rectangle
+        left_line = max(left1, left2)
+        right_line = min(right1, right2)
+        top_line = max(top1, top2)
+        bottom_line = min(bottom1, bottom2)
+
+        # judge if there is an intersect
+        if left_line >= right_line or top_line >= bottom_line:
+            return 0.0
+        else:
+            intersect = (right_line - left_line) * (bottom_line - top_line)
+            return (intersect / (sum_area - intersect))*1.0
+
+    def compute_maxiou_onevsmulti(self, rec, locs):
+        return max(self.compute_iou(rec,loc) for loc in locs)
 
 
 def load_mask_image(file_path, resize_size):

@@ -62,10 +62,11 @@ class PerformanceMeter(object):
 class Trainer(object):
     _CHECKPOINT_NAME_TEMPLATE = '{}_checkpoint.pth.tar'
     _SPLITS = ('train', 'val', 'test')
-    _EVAL_METRICS = ['loss', 'classification', 'localization']
+    _EVAL_METRICS = ['loss', 'classification', 'localization', 'localizationtop1']
     _BEST_CRITERION_METRIC = 'localization'
     _NUM_CLASSES_MAPPING = {
         "CUB": 200,
+        "TINY": 200,
         "ILSVRC": 1000,
         "OpenImages": 100,
     }
@@ -97,6 +98,9 @@ class Trainer(object):
 
     def _set_performance_meters(self):
         self._EVAL_METRICS += ['localization_IOU_{}'.format(threshold)
+                               for threshold in self.args.iou_threshold_list]
+        
+        self._EVAL_METRICS += ['localizationtop1_IOU_{}'.format(threshold)
                                for threshold in self.args.iou_threshold_list]
 
         eval_dict = {
@@ -239,6 +243,10 @@ class Trainer(object):
                         print("Split {}, metric {}, best epoch: {}".format(
                             split, metric,
                             self.performance_meters[split][metric].best_epoch))
+        if self.gt_optimal_tau:
+            print('last epoch gt_optimal_tau {}'.format(self.gt_optimal_tau))
+        if self.top1_optimal_tau:
+            print('last epoch top1_optimal_tau {}'.format(self.top1_optimal_tau))
 
     def save_performances(self):
         log_path = os.path.join(self.args.log_folder, 'performance_log.pickle')
@@ -280,21 +288,43 @@ class Trainer(object):
             multi_contour_eval=self.args.multi_contour_eval,
             log_folder=self.args.log_folder,
         )
-        cam_performance = cam_computer.compute_and_evaluate_cams()
+        cam_performance_gt, cam_optimal_gt_tau = cam_computer.compute_and_evaluate_cams_gt()
+        cam_performance_top1, cam_optimal_top1_tau, = cam_computer.compute_and_evaluate_cams_top1()
+
+        # cam_performance_gt, cam_performance_top1 = cam_performance
 
         if self.args.multi_iou_eval or self.args.dataset_name == 'OpenImages':
-            loc_score = np.average(cam_performance)
+            loc_score_gt = np.average(cam_performance_gt)
+            loc_score_top1 = np.average(cam_performance_top1)
+            gt_optimal_tau = np.average(cam_optimal_gt_tau)
+            top1_optimal_tau = np.average(cam_optimal_top1_tau)
+
         else:
-            loc_score = cam_performance[self.args.iou_threshold_list.index(50)]
+            loc_score_gt = cam_performance_gt[self.args.iou_threshold_list.index(50)]
+            loc_score_top1 = cam_performance_top1[self.args.iou_threshold_list.index(50)]
+            gt_optimal_tau = cam_optimal_gt_tau[self.args.iou_threshold_list.index(50)]
+            top1_optimal_tau = cam_optimal_top1_tau[self.args.iou_threshold_list.index(50)]
 
-        self.performance_meters[split]['localization'].update(loc_score)
 
-        if self.args.dataset_name in ('CUB', 'ILSVRC'):
+
+
+        self.performance_meters[split]['localization'].update(loc_score_gt)
+        self.performance_meters[split]['localizationtop1'].update(loc_score_top1)
+
+        
+
+        if self.args.dataset_name in ('CUB', 'ILSVRC', 'TINY'):
             for idx, IOU_THRESHOLD in enumerate(self.args.iou_threshold_list):
                 self.performance_meters[split][
                     'localization_IOU_{}'.format(IOU_THRESHOLD)].update(
-                    cam_performance[idx])
-
+                    cam_performance_gt[idx])
+                self.performance_meters[split][
+                    'localizationtop1_IOU_{}'.format(IOU_THRESHOLD)].update(
+                    cam_performance_top1[idx])
+        
+        self.gt_optimal_tau = gt_optimal_tau
+        self.top1_optimal_tau = top1_optimal_tau
+  
     def _torch_save_model(self, filename, epoch):
         torch.save({'architecture': self.args.architecture,
                     'epoch': epoch,
@@ -356,13 +386,13 @@ class Trainer(object):
 def main():
     trainer = Trainer()
 
-    print("===========================================================")
-    print("Start epoch 0 ...")
-    trainer.evaluate(epoch=0, split='val')
-    trainer.print_performances()
-    trainer.report(epoch=0, split='val')
-    trainer.save_checkpoint(epoch=0, split='val')
-    print("Epoch 0 done.")
+    # print("===========================================================")
+    # print("Start epoch 0 ...")
+    # trainer.evaluate(epoch=0, split='val')
+    # trainer.print_performances()
+    # trainer.report(epoch=0, split='val')
+    # trainer.save_checkpoint(epoch=0, split='val')
+    # print("Epoch 0 done.")
 
     for epoch in range(trainer.args.epochs):
         print("===========================================================")

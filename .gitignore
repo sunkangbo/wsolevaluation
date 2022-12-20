@@ -1,0 +1,4 @@
+tmp
+train_log
+*.pyc
+*.out
